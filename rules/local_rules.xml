@@ -1,0 +1,18 @@
+<!--
+  Custom Wazuh rule — brute-force detection (Wazuh SIEM Lab v2)
+  Location on the server: /var/ossec/etc/rules/local_rules.xml
+
+  Built-in rule 60122 fires on every single failed Windows logon (Event ID 4625).
+  One failed logon is usually a typo. This correlation rule fires when the SAME
+  user account fails to log on 5 or more times within 120 seconds.
+-->
+<group name="windows,custom_brute_force,">
+  <rule id="100100" level="10" frequency="5" timeframe="120">
+    <if_matched_sid>60122</if_matched_sid>
+    <same_field>win.eventdata.targetUserName</same_field>
+    <description>Possible brute force: 5+ failed logons for user $(win.eventdata.targetUserName) within 2 minutes</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+  </rule>
+</group>
