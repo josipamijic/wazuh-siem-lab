@@ -2,11 +2,11 @@
 
 > **In 30 seconds:** I built a small security monitoring system (a SIEM) at home.
 > I installed **Wazuh** on an Ubuntu server, connected a **Windows 11** computer to it,
-> and watched real security events — like failed and successful logins — flow from the
-> Windows machine into a central dashboard. I then analysed those events the way an
-> IT support or SOC analyst would: what happened, is it normal or suspicious, and what
-> I would do about it. The project shows I can set up the tools, read Windows logs,
-> and understand what they mean.
+> and watched real security events flow into a central dashboard.
+> In **v2** I added **Sysmon** so Wazuh can see which programs run on the computer, and
+> I wrote my **own detection rule** that raises an alert when someone repeatedly guesses
+> a password (brute force). I tested both with simulated attacker activity and analysed
+> the alerts the way an IT support or SOC analyst would.
 
 ---
 
@@ -19,10 +19,8 @@ Without it, every machine keeps its own logs and no one is watching them togethe
 In this lab I set up Wazuh (a free, open-source SIEM) for a fictional small company,
 **NordDesk AB**, whose IT support team wants to start monitoring its Windows computers.
 
-The full chain I built and tested:
-
 ```
-Windows 11 endpoint  →  Wazuh agent  →  logs  →  Wazuh server (SIEM)  →  alert  →  analysis
+Windows 11 endpoint (+ Sysmon)  →  Wazuh agent  →  Wazuh server (SIEM)  →  rules  →  alert  →  analysis
 ```
 
 ## Why I built it
@@ -30,87 +28,117 @@ Windows 11 endpoint  →  Wazuh agent  →  logs  →  Wazuh server (SIEM)  → 
 I'm studying to become a cybersecurity developer and I'm applying for part-time
 IT support / service desk roles. This project shows hands-on skills that matter for
 both: installing and configuring systems, working with virtual machines and networking,
-reading Windows Event Logs, and using a real security monitoring tool.
+reading Windows Event Logs, troubleshooting, and using a real security monitoring tool.
 
 ## What I actually did
 
-- Created an **Ubuntu Server 24.04** virtual machine on Hyper-V and installed the full
-  Wazuh stack (indexer + manager + dashboard) using the all-in-one installation.
-- Created an **isolated internal lab network** in Hyper-V so the server and the Windows
-  endpoint could talk to each other in a controlled environment.
-- Installed the **Wazuh agent** on a Windows 11 machine and registered it with the server
-  (confirmed **Active** in the dashboard).
-- **Generated real security events** on Windows (failed logins, successful logins) and
-  confirmed they were collected and analysed by Wazuh.
-- **Analysed the alerts**: identified the Windows Event IDs, the Wazuh rule that fired,
-  the severity level, and the **MITRE ATT&CK** technique Wazuh mapped them to.
-- Investigated a single failed-login alert down to the detail level (authentication
-  package, logon type, failure reason, Windows status codes).
+### v1 — Build the SIEM and monitor logons
+
+- Created an **Ubuntu Server** virtual machine on Hyper-V and installed the full Wazuh
+  stack (indexer + manager + dashboard) using the all-in-one installation.
+- Connected the server and a Windows 11 endpoint on a Hyper-V lab network.
+- Installed the **Wazuh agent** on Windows 11 and registered it with the server.
+- **Generated real security events** (failed and successful logons) and analysed them:
+  Windows Event IDs, the Wazuh rule that fired, severity, and **MITRE ATT&CK** mapping.
+
+### v2 — Process visibility and my own detection rule
+
+- **Deployed Sysmon** with the community SwiftOnSecurity configuration and configured
+  the Wazuh agent to forward Sysmon events.
+- **Simulated attacker discovery activity** (`whoami`, `net user`,
+  `net localgroup administrators` from PowerShell) and confirmed Wazuh detected it as
+  **T1087 Account Discovery**, down to the exact command line and file hashes.
+- **Identified a false positive** (a level-15 alert caused by normal PowerShell behaviour)
+  and documented how an analyst would verify and tune it.
+- **Wrote a custom correlation rule**: alert when the same account fails to log on
+  **5+ times within 2 minutes** (MITRE **T1110 Brute Force**), validated it safely
+  before loading it, and proved it works with a simulated brute-force attack.
+- **Troubleshot real lab problems**: VMs on different subnets, a host disk filled by
+  automatic Hyper-V checkpoints, and a Wazuh manager component that had stopped.
 
 ## Key things the lab demonstrates
 
 | Skill | Where it shows up |
 |---|---|
-| Virtualisation & networking | Hyper-V VMs, internal switch, static/DHCP addressing |
-| Linux server administration | Ubuntu Server install, SSH, service management |
-| Windows security logging | Event ID 4625 (failed logon), 4624 (successful logon) |
-| SIEM operation | Wazuh install, agent enrollment, dashboard, searching events |
-| Security analysis | Reading alerts, severity, MITRE ATT&CK mapping |
+| Virtualisation & networking | Hyper-V VMs, subnets, DHCP vs static addressing |
+| Linux server administration | Ubuntu Server, SSH, systemd services, ports |
+| Windows security logging | Event IDs 4624/4625, Sysmon Event ID 1 (process creation) |
+| SIEM operation | Wazuh install, agent configuration, searching and analysing alerts |
+| Detection engineering | Custom Wazuh correlation rule with MITRE mapping |
+| Security analysis | MITRE ATT&CK, false-positive assessment, analyst next steps |
+| Troubleshooting | Disk space, Hyper-V checkpoints, agent/manager connectivity |
 
-## Example: analysing a failed login
+## Highlight: my custom brute-force rule
 
-When I ran repeated failed authentication attempts on the Windows endpoint, Wazuh
-captured each one as **Event ID 4625 — "Logon Failure – Unknown user or bad password"**,
-rule level 5. Opening one alert showed useful detail for an analyst:
+Wazuh's built-in rule fires on every single failed logon — but one failed logon is
+usually a typo. My rule correlates them:
 
-- **Authentication package:** NTLM
-- **Logon type:** 3 (a network logon — matches my test method)
-- **Failure reason:** `%%2313` (unknown user name or bad password)
-- **Status / sub-status:** `0xC000006D` / `0xC0000064` (the account does not exist)
-- **MITRE ATT&CK:** mapped to credential-access / valid-accounts techniques
+```xml
+<rule id="100100" level="10" frequency="5" timeframe="120">
+  <if_matched_sid>60122</if_matched_sid>
+  <same_field>win.eventdata.targetUserName</same_field>
+  <description>Possible brute force: 5+ failed logons for user $(win.eventdata.targetUserName) within 2 minutes</description>
+  <mitre><id>T1110</id></mitre>
+</rule>
+```
 
-A single failed login is normal. **Many** failed logins in a short time is a classic
-sign of a brute-force or password-spraying attempt — which is exactly the kind of
-pattern a SIEM is built to surface.
+After 16 simulated failed logons, Wazuh raised **3 level-10 alerts** naming the
+targeted account:
+
+![Brute-force alert detail](screenshots/v2-09-bruteforce-alert-detail.png)
+
+Full write-up: [`docs/07-custom-rule.md`](docs/07-custom-rule.md)
 
 ## Documentation
 
 - [`scenario.md`](scenario.md) — the fictional company and goal
 - [`docs/01-architecture.md`](docs/01-architecture.md) — lab design, machines, network
-- [`docs/02-installation.md`](docs/02-installation.md) — how I installed the Wazuh server
+- [`docs/02-installation.md`](docs/02-installation.md) — installing the Wazuh server
 - [`docs/03-agent-setup.md`](docs/03-agent-setup.md) — connecting the Windows 11 agent
-- [`docs/04-detections.md`](docs/04-detections.md) — the events, alerts, and analysis
+- [`docs/04-detections.md`](docs/04-detections.md) — v1 events, alerts, and analysis
 - [`docs/05-lessons.md`](docs/05-lessons.md) — what I learned, limitations, next steps
+- [`docs/06-sysmon.md`](docs/06-sysmon.md) — **v2:** Sysmon process monitoring and detections
+- [`docs/07-custom-rule.md`](docs/07-custom-rule.md) — **v2:** custom brute-force rule
+- [`docs/08-troubleshooting-v2.md`](docs/08-troubleshooting-v2.md) — **v2:** real problems and how I fixed them
+- [`rules/local_rules.xml`](rules/local_rules.xml) — the custom rule itself
 
 ## Screenshots
 
-See the [`screenshots/`](screenshots/) folder:
+See the [`screenshots/`](screenshots/) folder.
 
 | File | Shows |
 |---|---|
-| `03-agent-active.png` | Windows 11 agent registered and **Active** in Wazuh |
-| `04-threat-hunting.png` | Threat Hunting overview with MITRE ATT&CK breakdown |
-| `05-events-table.png` | Table of real security events from the endpoint |
-| `06-alert-detail.png` | A single failed-login alert, full detail |
+| `03-agent-active.png` | v1 — Windows 11 agent registered and **Active** |
+| `04-threat-hunting.png` | v1 — Threat Hunting overview with MITRE ATT&CK breakdown |
+| `05-events-table.png` | v1 — Table of real security events from the endpoint |
+| `06-alert-detail.png` | v1 — A single failed-logon alert, full detail |
+| `v2-01-agent-active.png` | v2 — Agent reconnected after troubleshooting |
+| `v2-02-sysmon-installed.png` | v2 — Sysmon running and logging events |
+| `v2-03-sysmon-dashboard.png` | v2 — Sysmon alerts with MITRE ATT&CK breakdown |
+| `v2-04-sysmon-events-list.png` | v2 — List of Sysmon-based detections |
+| `v2-05-sysmon-alert-detail.png` | v2 — Discovery alert: command line and hashes |
+| `v2-06-sysmon-alert-mitre.png` | v2 — Same alert: MITRE T1087 mapping |
+| `v2-07-custom-rule.png` | v2 — The custom brute-force rule on the server |
+| `v2-08-bruteforce-alert-list.png` | v2 — Custom rule firing (3 alerts) |
+| `v2-09-bruteforce-alert-detail.png` | v2 — Custom rule alert detail, MITRE T1110 |
+| `v2-troubleshoot-01..03` | v2 — Disk-full incident: symptom, diagnosis, fix |
 
 ## Limitations & next steps
 
-This is a **learning lab**, not a production system. Being honest about its limits is
-part of understanding how the tool really works:
+This is a **learning lab**, not a production system:
 
-- **No process or file monitoring yet.** By default, Wazuh does not log every process
-  that starts or every file that changes. Next step: deploy **Sysmon** and enable
-  **File Integrity Monitoring (FIM)** for much deeper endpoint visibility (e.g. detecting
-  "Word launches PowerShell" or encoded PowerShell commands).
-- **No custom detection rules yet.** Next step: write a custom Wazuh rule, for example
-  to alert on **5+ failed logins within 2 minutes** (brute-force detection) — moving from
-  using the tool to tuning it (detection engineering).
-- **Single endpoint, flat lab network.** A production setup would segment the network
-  and monitor many endpoints.
+- **Single endpoint, single-node server.** Not representative of a real, multi-machine
+  environment.
+- **Rules tested with simulated activity only.** Real environments need tuning against
+  normal user behaviour to keep false positives low.
+- **No File Integrity Monitoring tuning yet.** Next step: configure FIM for sensitive
+  folders.
+- **Next step: a small Purple Team exercise** — run a controlled attack chain and show
+  what Wazuh detects and what it misses.
 
 ## Tech used
 
-Wazuh 4.x · Ubuntu Server 24.04 · Windows 11 · Hyper-V · MITRE ATT&CK
+Wazuh 4.14 · Sysmon (SwiftOnSecurity config) · Ubuntu Server · Windows 11 · Hyper-V · PowerShell · MITRE ATT&CK
 
 ---
 
